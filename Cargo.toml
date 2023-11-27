@@ -14,3 +14,6 @@ log = "0.4.20"
 thiserror = "1.0.49"
 ipnetwork = "0.20.0"
 anyhow = "1.0.75"
+
+[dev-dependencies]
+rand = "0.8.5"

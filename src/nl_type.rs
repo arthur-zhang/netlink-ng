@@ -1,4 +1,5 @@
 use std::fs::File;
+use std::net::IpAddr;
 
 use netlink_packet_route::{AF_INET, AF_INET6, AF_UNSPEC};
 
@@ -36,6 +37,33 @@ pub struct Tuntap {
     pub owner: u32,
     pub group: u32,
 }
+
+#[derive(Debug, Default)]
+pub struct Vxlan {
+    pub vxlan_id: u32,
+    pub vtep_dev_index: u32,
+    pub src_addr: Option<IpAddr>,
+    pub group: Option<IpAddr>,
+    pub ttl: i32,
+    pub tos: i32,
+    pub learning: bool,
+    pub proxy: bool,
+    pub rsc: bool,
+    pub l2miss: bool,
+    pub l3miss: bool,
+    pub udp_csum: bool,
+    pub udp6_zero_csum_tx: bool,
+    pub udp6_zero_csum_rx: bool,
+    pub no_age: bool,
+    pub gbp: bool,
+    pub flow_based: bool,
+    pub age: u32,
+    pub limit: u32,
+    pub port: u16,
+    pub port_low: u16,
+    pub port_high: u16,
+}
+
 
 #[derive(Debug, Default)]
 pub struct Device {}

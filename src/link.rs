@@ -8,13 +8,13 @@ use netlink_packet_route::{
     IFF_ALLMULTI, IFF_BROADCAST, IFF_LOOPBACK, IFF_MULTICAST, IFF_POINTOPOINT, IFF_PROMISC,
     IFF_UP, LinkMessage, RTEXT_FILTER_VF, RtnlMessage,
 };
-use netlink_packet_route::link::nlas::{Info, InfoBridge, InfoData, InfoKind, Nla, State, Stats64Buffer, VethInfo};
+use netlink_packet_route::link::nlas::{Info, InfoBridge, InfoData, InfoKind, InfoVxlan, Nla, State, Stats64Buffer, VethInfo};
 use netlink_packet_route::nlas::link::Stats64;
 use netlink_packet_utils::Parseable;
 
-use crate::{nl_linux, rtnl_msg_ext};
+use crate::{nl_linux, rtnl_msg_ext, utils};
 use crate::handle::{get_link_index, NetlinkHandle};
-use crate::nl_type::{Bridge, Dummy, Tuntap, Veth};
+use crate::nl_type::{Bridge, Dummy, Tuntap, Veth, Vxlan};
 
 pub type Stats = Stats64;
 pub type OperState = State;
@@ -27,7 +27,7 @@ pub struct LinkAttrs {
     // Transmit Queue Length
     pub tx_q_len: u32,
     pub name: String,
-    pub hardware_addr: Option<Vec<u8>>,
+    pub hardware_addr: Option<[u8; 6]>,
     pub flags: u32,
     pub raw_flags: u32,
     pub parent_index: u32,
@@ -122,6 +122,7 @@ pub enum LinkKind {
     Veth(Veth),
     Bridge(Bridge),
     Tuntap(Tuntap),
+    Vxlan(Vxlan),
     Device,
     Dummy(Dummy),
 }
@@ -387,10 +388,91 @@ fn link_modify(link: &Link, flags: u16) -> anyhow::Result<()> {
         }
         LinkKind::Tuntap(_) => {}
         LinkKind::Dummy(_) => {}
+        LinkKind::Vxlan(vxlan) => {
+            add_vxlan_attrs(&mut msg, link_info_nlas, vxlan);
+        }
     }
     let _ = NetlinkHandle::new().execute(RtnlMessage::NewLink(msg), flags)?;
 
     Ok(())
+}
+
+fn add_vxlan_attrs(msg: &mut LinkMessage, mut link_info_nlas: Vec<Info>, vxlan: &Vxlan) {
+    let mut vec = vec![
+        InfoVxlan::Id(vxlan.vxlan_id)
+    ];
+    if vxlan.vtep_dev_index > 0 {
+        vec.push(InfoVxlan::Link(vxlan.vtep_dev_index));
+    }
+
+    if let Some(src_addr) = vxlan.src_addr {
+        if src_addr.is_ipv4() {
+            vec.push(InfoVxlan::Local(utils::ip_to_bytes(&src_addr)));
+        } else {
+            vec.push(InfoVxlan::Local6(utils::ip_to_bytes(&src_addr)));
+        }
+    }
+    if let Some(group) = vxlan.group {
+        if group.is_ipv4() {
+            vec.push(InfoVxlan::Group(utils::ip_to_bytes(&group)));
+        } else {
+            vec.push(InfoVxlan::Group6(utils::ip_to_bytes(&group)));
+        }
+    }
+    if vxlan.ttl > 0 {
+        vec.push(InfoVxlan::Ttl(vxlan.ttl as u8));
+    }
+    if vxlan.tos > 0 {
+        vec.push(InfoVxlan::Tos(vxlan.tos as u8));
+    }
+    if vxlan.learning {
+        vec.push(InfoVxlan::Learning(1));
+    }
+    if vxlan.proxy {
+        vec.push(InfoVxlan::Proxy(1));
+    }
+    if vxlan.rsc {
+        vec.push(InfoVxlan::Rsc(1));
+    }
+    if vxlan.l2miss {
+        vec.push(InfoVxlan::L2Miss(1));
+    }
+    if vxlan.l3miss {
+        vec.push(InfoVxlan::L3Miss(1));
+    }
+    if vxlan.udp6_zero_csum_tx {
+        vec.push(InfoVxlan::UDPZeroCsumTX(1));
+    }
+    if vxlan.udp6_zero_csum_rx {
+        vec.push(InfoVxlan::UDPZeroCsumRX(1));
+    }
+    if vxlan.udp_csum {
+        vec.push(InfoVxlan::UDPCsum(1));
+    }
+    if vxlan.gbp {
+        vec.push(InfoVxlan::Gbp(1));
+    }
+
+    if vxlan.flow_based {
+        // todo
+    }
+    if vxlan.no_age {
+        vec.push(InfoVxlan::Ageing(0));
+    } else if vxlan.age > 0 {
+        vec.push(InfoVxlan::Ageing(vxlan.age));
+    }
+
+    if vxlan.limit > 0 {
+        vec.push(InfoVxlan::Limit(vxlan.limit));
+    }
+    if vxlan.port > 0 {
+        vec.push(InfoVxlan::Port(vxlan.port));
+    }
+    if vxlan.port_low > 0 && vxlan.port_high > 0 {
+        vec.push(InfoVxlan::PortRange((vxlan.port_low, vxlan.port_high)));
+    }
+    link_info_nlas.push(Info::Data(InfoData::Vxlan(vec)));
+    msg.nlas.push(Nla::Info(link_info_nlas));
 }
 
 // LinkSetMaster sets the master of the link device.
@@ -416,6 +498,7 @@ fn get_link_kind(link: &LinkKind) -> InfoKind {
         LinkKind::Device { .. } => InfoKind::Dummy,
         LinkKind::Tuntap { .. } => InfoKind::IpTun,
         LinkKind::Dummy { .. } => { InfoKind::Dummy }
+        LinkKind::Vxlan(_) => { InfoKind::Vxlan }
     }
 }
 
@@ -448,7 +531,12 @@ fn link_deserialize(msg: &RtnlMessage) -> anyhow::Result<Link> {
                 base.name = name.clone();
             }
             Nla::Address(addr) => {
-                base.hardware_addr = Some(addr.to_vec());
+                let hardware_addr = if addr.len() == 6 {
+                    [addr[0], addr[1], addr[2], addr[3], addr[4], addr[5]]
+                } else {
+                    [0, 0, 0, 0, 0, 0]
+                };
+                base.hardware_addr = Some(hardware_addr);
             }
             Nla::Mtu(mtu) => {
                 base.mtu = *mtu;
@@ -597,7 +685,10 @@ mod tests {
     use std::fs::File;
     use std::os::fd::AsRawFd;
 
-    use crate::nl_type::Bridge;
+    use rand::Rng;
+
+    use crate::addr_list;
+    use crate::nl_type::{Bridge, FAMILY_V4};
 
     use super::*;
 
@@ -759,5 +850,48 @@ mod tests {
         let link_id = LinkId::Name("flannel0");
         let res = link_set_mtu(link_id, 1400);
         assert!(res.is_ok());
+    }
+
+    #[test]
+    fn test_new_vxlan() {
+        let eth0_link = link_by_name("eth0").unwrap().unwrap();
+        let eth0_addr = addr_list(LinkId::Name("eth0"), FAMILY_V4).unwrap().first().unwrap().ipnet.ip().clone();
+        let mac_addr = new_hardware_addr().unwrap();
+        let link = Link {
+            link_attrs: LinkAttrs {
+                mtu: 1500 - 60,
+                name: "vxlan0".to_string(),
+                hardware_addr: Some(mac_addr),
+                ..Default::default()
+            },
+            link_kind: LinkKind::Vxlan(Vxlan {
+                vxlan_id: 1,
+                vtep_dev_index: eth0_link.link_attrs.index,
+                src_addr: Some(eth0_addr),
+                learning: true,
+                port: 9999,
+                gbp: false,
+                ..Default::default()
+            }),
+        };
+        let result = link_add(&link).unwrap();
+    }
+
+    pub type HardwareAddr = [u8; 6];
+
+    pub fn new_hardware_addr() -> anyhow::Result<HardwareAddr> {
+        let mut rng = rand::thread_rng();
+        let mut hardware_addr: HardwareAddr = [0; 6];
+        rng.fill(&mut hardware_addr);
+        hardware_addr[0] = (hardware_addr[0] & 0xfe) | 0x02;
+        Ok(hardware_addr)
+    }
+
+    #[test]
+    fn test_rand_mac() -> anyhow::Result<()> {
+        let mac = new_hardware_addr()?;
+        println!("{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        // println!("{:?}", mac);
+        Ok(())
     }
 }

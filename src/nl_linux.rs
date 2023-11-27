@@ -1,4 +1,4 @@
-use netlink_packet_route::constants::*;
+use netlink_packet_route::ARPHRD_FCFABRIC;
 
 pub fn encap_type(t: u16) -> String {
     match t {
