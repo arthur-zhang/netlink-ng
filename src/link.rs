@@ -1,19 +1,16 @@
-use std::io::ErrorKind::NotFound;
 use std::os::fd::RawFd;
 
 use anyhow::bail;
 use log::{debug, info};
+use macaddr::MacAddr6;
 use netlink_packet_core::{NLM_F_ACK, NLM_F_CREATE, NLM_F_DUMP, NLM_F_EXCL};
-use netlink_packet_route::{
-    IFF_ALLMULTI, IFF_BROADCAST, IFF_LOOPBACK, IFF_MULTICAST, IFF_POINTOPOINT, IFF_PROMISC,
-    IFF_UP, LinkMessage, RTEXT_FILTER_VF, RtnlMessage,
-};
+use netlink_packet_route::{AF_UNSPEC, IFF_ALLMULTI, IFF_BROADCAST, IFF_LOOPBACK, IFF_MULTICAST, IFF_POINTOPOINT, IFF_PROMISC, IFF_UP, LinkMessage, RTEXT_FILTER_VF, RtnlMessage};
 use netlink_packet_route::link::nlas::{Info, InfoBridge, InfoData, InfoKind, InfoVxlan, Nla, State, Stats64Buffer, VethInfo};
 use netlink_packet_route::nlas::link::Stats64;
 use netlink_packet_utils::Parseable;
 
 use crate::{nl_linux, rtnl_msg_ext, utils};
-use crate::handle::{get_link_index, NetlinkHandle};
+use crate::handle::NetlinkHandle;
 use crate::nl_type::{Bridge, Dummy, Tuntap, Veth, Vxlan};
 
 pub type Stats = Stats64;
@@ -27,7 +24,7 @@ pub struct LinkAttrs {
     // Transmit Queue Length
     pub tx_q_len: u32,
     pub name: String,
-    pub hardware_addr: Option<[u8; 6]>,
+    pub hardware_addr: Option<MacAddr6>,
     pub flags: u32,
     pub raw_flags: u32,
     pub parent_index: u32,
@@ -115,6 +112,9 @@ impl Link {
             link_kind,
         }
     }
+    pub fn as_index(&self) -> u32 {
+        self.link_attrs.index
+    }
 }
 
 #[derive(Debug)]
@@ -154,8 +154,9 @@ pub fn link_by_index(index: u32) -> anyhow::Result<Option<Link>> {
 
 pub fn link_by_name(name: &str) -> anyhow::Result<Option<Link>> {
     let mut msg = LinkMessage::default();
+    msg.header.interface_family = AF_UNSPEC as u8;
     msg.nlas.push(Nla::ExtMask(RTEXT_FILTER_VF));
-    msg.nlas.push(Nla::IfName(name.to_owned()));
+    msg.nlas.push(Nla::IfName(name.to_string()));
 
     let resp = NetlinkHandle::new().execute(RtnlMessage::GetLink(msg), NLM_F_ACK)?;
     if resp.len() == 0 {
@@ -175,7 +176,9 @@ pub fn link_add(link: &Link) -> anyhow::Result<()> {
 }
 
 pub fn link_list() -> anyhow::Result<Vec<Link>> {
-    let msg = LinkMessage::default();
+    let mut msg = LinkMessage::default();
+    msg.header.interface_family = AF_UNSPEC as u8;
+    msg.nlas.push(Nla::ExtMask(RTEXT_FILTER_VF));
 
     let res = NetlinkHandle::new()
         .execute(RtnlMessage::GetLink(msg), NLM_F_ACK | NLM_F_DUMP)?
@@ -183,44 +186,70 @@ pub fn link_list() -> anyhow::Result<Vec<Link>> {
         .map(|it| link_deserialize(it))
         .collect::<Vec<_>>();
     let res: Result<Vec<_>, _> = res.into_iter().collect();
-    let links: Vec<Link> = res.unwrap();
+    let links: Vec<Link> = res?;
     Ok(links)
 }
 
-#[derive(Copy, Clone)]
-pub enum LinkId<'a> {
-    Id(u32),
-    Name(&'a str),
+pub type LinkIndex = u32;
+
+pub trait AsLinkIndex {
+    fn as_index(&self) -> LinkIndex;
 }
 
-impl<'a> LinkId<'a> {
-    pub fn index(&self) -> anyhow::Result<u32> {
-        get_link_index(self)
+pub trait TryAsLinkIndex {
+    fn try_as_index(&self) -> anyhow::Result<Option<LinkIndex>>;
+}
+
+impl AsLinkIndex for Link {
+    fn as_index(&self) -> LinkIndex {
+        self.link_attrs.index
     }
 }
 
-impl<'a> From<&Link> for LinkId<'a> {
-    fn from(value: &Link) -> Self {
-        LinkId::Id(value.attrs().index)
-    }
-}
-
-
-pub fn link_del(link: LinkId) -> anyhow::Result<()> {
-    let index = match get_link_index(&link) {
-        Ok(index) => index,
-        Err(e) => {
-            if let Some(it) = e.downcast_ref::<std::io::Error>() {
-                if it.kind() == NotFound {
-                    return Ok(());
-                }
-            }
-            return Err(e);
+impl TryAsLinkIndex for Link {
+    fn try_as_index(&self) -> anyhow::Result<Option<LinkIndex>> {
+        if self.attrs().index == 0 {
+            return self.attrs().name.as_str().try_as_index();
         }
-    };
+        Ok(Some(self.link_attrs.index))
+    }
+}
+
+impl TryAsLinkIndex for &str {
+    fn try_as_index(&self) -> anyhow::Result<Option<LinkIndex>> {
+        let link = link_by_name(self)?;
+        match link {
+            None => {
+                Ok(None)
+            }
+            Some(link) => {
+                Ok(Some(link.link_attrs.index))
+            }
+        }
+    }
+}
+
+impl AsLinkIndex for u32 {
+    fn as_index(&self) -> LinkIndex {
+        *self
+    }
+}
+
+pub fn link_del(link_index: LinkIndex) -> anyhow::Result<()> {
+    // let index = match get_link_index(&link) {
+    //     Ok(index) => index,
+    //     Err(e) => {
+    //         if let Some(it) = e.downcast_ref::<std::io::Error>() {
+    //             if it.kind() == NotFound {
+    //                 return Ok(());
+    //             }
+    //         }
+    //         return Err(e);
+    //     }
+    // };
 
     let mut msg = LinkMessage::default();
-    msg.header.index = index;
+    msg.header.index = link_index;
 
     let res = NetlinkHandle::new().execute(RtnlMessage::DelLink(msg), NLM_F_ACK)?;
     for x in res {
@@ -230,9 +259,9 @@ pub fn link_del(link: LinkId) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn link_set_up(link: LinkId) -> anyhow::Result<()> {
+pub fn link_set_up(link: LinkIndex) -> anyhow::Result<()> {
     let mut msg = LinkMessage::default();
-    msg.header.index = get_link_index(&link)?;
+    msg.header.index = link;
     msg.header.flags |= IFF_UP;
     msg.header.change_mask |= IFF_UP;
     let _ = NetlinkHandle::new().execute(
@@ -291,7 +320,7 @@ fn link_modify(link: &Link, flags: u16) -> anyhow::Result<()> {
         msg.nlas.push(Nla::TxQueueLen(base.tx_q_len));
     }
     if let Some(addr) = &base.hardware_addr {
-        msg.nlas.push(Nla::Address(addr.to_vec()));
+        msg.nlas.push(Nla::Address(addr.into_array().to_vec()));
     }
     if base.num_tx_queues > 0 {
         msg.nlas.push(Nla::NumTxQueues(base.num_tx_queues));
@@ -532,9 +561,9 @@ fn link_deserialize(msg: &RtnlMessage) -> anyhow::Result<Link> {
             }
             Nla::Address(addr) => {
                 let hardware_addr = if addr.len() == 6 {
-                    [addr[0], addr[1], addr[2], addr[3], addr[4], addr[5]]
+                    MacAddr6::new(addr[0], addr[1], addr[2], addr[3], addr[4], addr[5])
                 } else {
-                    [0, 0, 0, 0, 0, 0]
+                    MacAddr6::default()
                 };
                 base.hardware_addr = Some(hardware_addr);
             }
@@ -609,6 +638,9 @@ fn link_deserialize(msg: &RtnlMessage) -> anyhow::Result<Link> {
                             InfoKind::Tun => {
                                 link_kind = Some(LinkKind::Tuntap(Tuntap::default()));
                             }
+                            InfoKind::Vxlan => {
+                                link_kind = Some(LinkKind::Vxlan(Vxlan::default()));
+                            }
                             _ => {
                                 debug!("info kind: {:?}", kind);
                                 unimplemented!("info kind: {:?}", kind)
@@ -657,8 +689,7 @@ fn link_deserialize(msg: &RtnlMessage) -> anyhow::Result<Link> {
     });
 }
 
-pub fn set_promisc_on(link: LinkId) -> anyhow::Result<()> {
-    let index = get_link_index(&link)?;
+pub fn set_promisc_on(index: LinkIndex) -> anyhow::Result<()> {
     let mut msg = LinkMessage::default();
     msg.header.index = index;
     msg.header.flags |= IFF_PROMISC;
@@ -668,8 +699,7 @@ pub fn set_promisc_on(link: LinkId) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn link_set_mtu(link_id: LinkId, mtu: u32) -> anyhow::Result<()> {
-    let index = get_link_index(&link_id)?;
+pub fn link_set_mtu(index: LinkIndex, mtu: u32) -> anyhow::Result<()> {
     let mut msg = LinkMessage::default();
     msg.header.index = index;
     msg.header.flags |= IFF_MULTICAST;
@@ -695,19 +725,25 @@ mod tests {
     #[test]
     fn test_link_add_del_with_index() {
         let result = link_list();
+
         assert!(result.is_ok());
+        let result = result.unwrap();
+        for link in result {
+            println!("link: {}", link.link_attrs.name);
+        }
     }
 
     #[test]
     fn test_link_by_name() -> anyhow::Result<()> {
-        let a = link_by_name("eth0")?;
-        info!("{:?}", a.unwrap());
-        let a = link_by_name("eth0")?;
-        info!("{:?}", a.unwrap());
-        let a = link_by_name("eth0")?;
-        info!("{:?}", a.unwrap());
-        let a = link_by_name("eth0")?;
-        info!("{:?}", a.unwrap());
+        let a = link_by_name("vxlan0")?;
+
+        println!("{:?}", a);
+        // let a = link_by_name("eth0")?;
+        // info!("{:?}", a.unwrap());
+        // let a = link_by_name("eth0")?;
+        // info!("{:?}", a.unwrap());
+        // let a = link_by_name("eth0")?;
+        // info!("{:?}", a.unwrap());
         Ok(())
     }
 
@@ -715,7 +751,7 @@ mod tests {
     fn test_link_by_index() -> anyhow::Result<()> {
         // let link = link_by_index(382)?;
         // println!("link: {:?}", link);
-        let link = link_by_name("eth0")?;
+        let link = link_by_name("vxlan0")?;
         println!("link: {:?}", link);
         Ok(())
     }
@@ -723,7 +759,7 @@ mod tests {
     #[test]
     fn test_set_link_up() -> anyhow::Result<()> {
         let link = link_by_name("br234")?.unwrap();
-        let _ = link_set_up((&link).into());
+        let _ = link_set_up(link.as_index());
         let link = link_by_name("br234")?.unwrap();
         debug!("link after set up {:?}", link);
         // assert_eq!(link.attrs().oper_state, State::Up);
@@ -798,17 +834,33 @@ mod tests {
     }
 
     #[test]
-    fn test_link_del() -> Result<(), Box<dyn Error>> {
+    fn test_link_del() -> anyhow::Result<()> {
+        let link_idx = 100;
+        let res = link_del(link_idx);
+        println!("res {:?}", res);
+        let err = res.unwrap_err();
+        if let Some(io_err) = err.downcast_ref::<std::io::Error>() {
+            println!("{}", io_err.kind());
+            if io_err.kind() == std::io::ErrorKind::NotFound {
+                println!("not found...........")
+            }
+        } else {
+            println!("other...........");
+        }
+
         // let links = link_list()?;
         // for it in &links {
         //     link_del(it)?;
         // }
-        for i in 0..1 {
-            let name = format!("br{i}");
-            let res = link_del(LinkId::Name(&name));
-            debug!("res: {:?}", res);
-        }
-
+        // for i in 0..1 {
+        //     let name = format!("br{i}");
+        //     let link_idx = name.as_str().try_as_index()?;
+        //     if let Some(link_idx) = link_idx {
+        //         let res = link_del(link_idx)?;
+        //     }
+        //     debug!("res: {:?}", res);
+        // }
+        //
         Ok(())
     }
 
@@ -831,10 +883,11 @@ mod tests {
     }
 
     #[test]
-    fn test_set_promisc_on() {
-        let link_id = LinkId::Name("br234");
+    fn test_set_promisc_on() -> anyhow::Result<()> {
+        let link_id = "br234".try_as_index()?.unwrap();
         let res = set_promisc_on(link_id);
         assert!(res.is_ok());
+        Ok(())
     }
 
     #[test]
@@ -846,16 +899,17 @@ mod tests {
     }
 
     #[test]
-    fn test_set_mtu() {
-        let link_id = LinkId::Name("flannel0");
+    fn test_set_mtu() -> anyhow::Result<()> {
+        let link_id = "flannel0".try_as_index()?.unwrap();
         let res = link_set_mtu(link_id, 1400);
         assert!(res.is_ok());
+        Ok(())
     }
 
     #[test]
     fn test_new_vxlan() {
         let eth0_link = link_by_name("eth0").unwrap().unwrap();
-        let eth0_addr = addr_list(LinkId::Name("eth0"), FAMILY_V4).unwrap().first().unwrap().ipnet.ip().clone();
+        let eth0_addr = addr_list("eth0".try_as_index().unwrap().unwrap(), FAMILY_V4).unwrap().first().unwrap().ipnet.ip().clone();
         let mac_addr = new_hardware_addr().unwrap();
         let link = Link {
             link_attrs: LinkAttrs {
@@ -877,19 +931,18 @@ mod tests {
         let result = link_add(&link).unwrap();
     }
 
-    pub type HardwareAddr = [u8; 6];
 
-    pub fn new_hardware_addr() -> anyhow::Result<HardwareAddr> {
+    pub fn new_hardware_addr() -> anyhow::Result<MacAddr6> {
         let mut rng = rand::thread_rng();
-        let mut hardware_addr: HardwareAddr = [0; 6];
+        let mut hardware_addr = [0u8; 6];
         rng.fill(&mut hardware_addr);
         hardware_addr[0] = (hardware_addr[0] & 0xfe) | 0x02;
-        Ok(hardware_addr)
+        Ok(MacAddr6::from(hardware_addr))
     }
 
     #[test]
     fn test_rand_mac() -> anyhow::Result<()> {
-        let mac = new_hardware_addr()?;
+        let mac = new_hardware_addr()?.into_array();
         println!("{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
         // println!("{:?}", mac);
         Ok(())

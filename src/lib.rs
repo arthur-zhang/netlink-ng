@@ -11,6 +11,10 @@ mod route;
 mod utils;
 mod rtnl_msg_ext;
 mod neigh;
+
+
+pub use netlink_packet_route::*;
+
 #[macro_export]
 macro_rules! unwrap_enum {
     ($e:expr, $variant:path) => {

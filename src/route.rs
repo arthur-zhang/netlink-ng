@@ -10,7 +10,7 @@ use netlink_packet_route::route::Nla;
 
 pub use constants::*;
 
-use crate::{LinkId, unwrap_enum, utils};
+use crate::{LinkIndex, unwrap_enum, utils};
 use crate::handle::NetlinkHandle;
 use crate::nl_type::Family;
 use crate::types::{Route, RouteProtocol};
@@ -205,11 +205,10 @@ fn route_handle(route: &Route, req_type: ReqType, flags: u16) -> anyhow::Result<
     Ok(())
 }
 
-pub fn route_list(link_id: Option<LinkId>, family: Family) -> anyhow::Result<Vec<Route>> {
+pub fn route_list(link_id: Option<LinkIndex>, family: Family) -> anyhow::Result<Vec<Route>> {
     let mut filter = None;
     if let Some(link_id) = link_id {
-        let idx = link_id.index()?;
-        filter = Some(Route { link_index: idx, ..Default::default() });
+        filter = Some(Route { link_index: link_id, ..Default::default() });
     };
 
     route_list_filtered(family, filter, RT_FILTER_OIF)
@@ -301,7 +300,7 @@ mod tests {
     use ipnetwork::{IpNetwork, Ipv4Network};
     use log::info;
 
-    use crate::link_by_name;
+    use crate::{link_by_name, TryAsLinkIndex};
     use crate::nl_type::FAMILY_V4;
 
     use super::*;
@@ -328,7 +327,7 @@ mod tests {
 
     #[test]
     fn test_route_list() -> anyhow::Result<()> {
-        let link_id = LinkId::Name("flannel0");
+        let link_id = "flannel0".try_as_index()?.unwrap();
         let routes = route_list(Some(link_id), FAMILY_V4)?;
         // let routes = route_list(None, FAMILY_V4)?;
         for r in routes {

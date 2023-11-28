@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-netlink-packet-route = "0.17.1"
+netlink-packet-route = { path = "../netlink-packet-route" }
 netlink-sys = "0.8.5"
 netlink-packet-core = "0.7.0"
 netlink-packet-utils = "0.5.2"
@@ -13,6 +13,8 @@ log = "0.4.20"
 thiserror = "1.0.49"
 ipnetwork = "0.20.0"
 anyhow = "1.0.75"
+macaddr = { version = "1.0.1", features = ["serde_std"] }
+libc = "0.2.150"
 
 [dev-dependencies]
 rand = "0.8.5"

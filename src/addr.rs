@@ -3,10 +3,10 @@ use std::net::{IpAddr, Ipv4Addr};
 use anyhow::anyhow;
 use ipnetwork::{IpNetwork, Ipv4Network};
 use netlink_packet_core::{NLM_F_ACK, NLM_F_DUMP};
-use netlink_packet_route::{AddressMessage, RtnlMessage};
-use netlink_packet_route::address::Nla;
+use netlink_packet_route::RtnlMessage;
+use netlink_packet_route::address::{AddressMessage, Nla};
 
-use crate::{Link, LinkId, utils};
+use crate::{LinkIndex, utils};
 use crate::handle::NetlinkHandle;
 use crate::nl_type::{Family, FAMILY_ALL, FAMILY_V4};
 
@@ -21,6 +21,14 @@ pub struct Addr {
     pub preferred_lft: i32,
     pub valid_lft: i32,
     pub link_index: u32,
+}
+
+impl Eq for Addr {}
+
+impl PartialEq for Addr {
+    fn eq(&self, other: &Self) -> bool {
+        self.ipnet == other.ipnet
+    }
 }
 
 impl Default for Addr {
@@ -46,15 +54,13 @@ pub enum ReqType {
     Change,
 }
 
-pub fn addr_add(link: &Link, addr: &Addr) -> anyhow::Result<()> {
-    addr_handle(link, addr, ReqType::Add)
+pub fn addr_add(link_idx: LinkIndex, addr: &Addr) -> anyhow::Result<()> {
+    addr_handle(link_idx, addr, ReqType::Add)
 }
 
-fn addr_handle(link: &Link, addr: &Addr, req_type: ReqType) -> anyhow::Result<()> {
-    let base = link.attrs();
-
+fn addr_handle(link_idx: LinkIndex, addr: &Addr, req_type: ReqType) -> anyhow::Result<()> {
     let mut msg = AddressMessage::default();
-    msg.header.index = base.index;
+    msg.header.index = link_idx;
     msg.header.scope = addr.scope as u8;
     let mut _mask = addr.ipnet.mask();
     if let Some(addr_peer) = &addr.peer {
@@ -64,6 +70,7 @@ fn addr_handle(link: &Link, addr: &Addr, req_type: ReqType) -> anyhow::Result<()
     msg.header.prefix_len = prefix;
     msg.header.family = utils::ip_to_family(&addr.ipnet.ip());
     let local_addr_vec = utils::ip_to_bytes(&addr.ipnet.ip());
+
     let peer_addr_vec = if let Some(peer) = addr.peer {
         utils::ip_to_bytes(&peer.ip())
     } else {
@@ -102,13 +109,12 @@ fn addr_handle(link: &Link, addr: &Addr, req_type: ReqType) -> anyhow::Result<()
     Ok(())
 }
 
-pub fn addr_del(link: &Link, addr: &Addr) -> anyhow::Result<()> {
+pub fn addr_del(link: LinkIndex, addr: &Addr) -> anyhow::Result<()> {
     addr_handle(link, addr, ReqType::Del)?;
     Ok(())
 }
 
-pub fn addr_list(link: LinkId, family: Family) -> anyhow::Result<Vec<Addr>> {
-    let link_index = link.index()?;
+pub fn addr_list(link_index: LinkIndex, family: Family) -> anyhow::Result<Vec<Addr>> {
     let mut msg = AddressMessage::default();
     msg.header.family = family;
 
@@ -140,7 +146,7 @@ impl TryFrom<&AddressMessage> for Addr {
         let mut dst = None;
         let mut local = None;
 
-        let family = msg.header.family;
+        let family = u8::from(msg.header.family);
         for attr in &msg.nlas {
             match attr {
                 Nla::Unspec(_) => {}
@@ -182,7 +188,7 @@ impl TryFrom<&AddressMessage> for Addr {
                 addr.ipnet = dst;
             }
         }
-        addr.scope = msg.header.scope as i32;
+        addr.scope = u8::from(msg.header.scope) as i32;
 
         Ok(addr)
     }
@@ -203,7 +209,7 @@ mod tests {
     fn test_addr_add() {
         let link = link_by_name("vethhost").unwrap().unwrap();
         let result = addr_add(
-            &link,
+            link.attrs().index,
             &Addr {
                 ipnet: IpNetwork::V4(
                     Ipv4Network::new(Ipv4Addr::new(198, 19, 249, 211), 16).unwrap(),
@@ -217,7 +223,7 @@ mod tests {
     fn test_addr_del() {
         let link = link_by_name("vethhost").unwrap().unwrap();
         addr_del(
-            &link,
+            link.as_index(),
             &Addr {
                 ipnet: IpNetwork::V4(
                     Ipv4Network::new(Ipv4Addr::new(198, 19, 249, 211), 16).unwrap(),
@@ -232,7 +238,7 @@ mod tests {
     fn test_addr_list() {
         // let link = link_by_name("br666").unwrap().unwrap();
         let link = link_by_name("eth20").unwrap().unwrap();
-        let result = addr_list(LinkId::from(&link), FAMILY_ALL);
+        let result = addr_list(link.as_index(), FAMILY_ALL);
         match result {
             Ok(result) => {
                 for addr in result {
