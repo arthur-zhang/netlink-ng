@@ -1,7 +1,7 @@
 use std::fmt::Display;
 use std::net::IpAddr;
-use libc::{AF_INET, AF_INET6};
 
+use libc::{AF_INET, AF_INET6};
 use macaddr::MacAddr6;
 use netlink_packet_core::{NLM_F_CREATE, NLM_F_REPLACE};
 use netlink_packet_route::{IFA_F_PERMANENT, NDA_UNSPEC, NeighbourMessage, RtnlMessage};
@@ -71,11 +71,12 @@ fn new_neigh(neigh: &Neigh, dst: IpAddr) -> NeighbourMessage {
 }
 
 pub fn neigh_add(neigh: &Neigh, flags: u16) -> anyhow::Result<()> {
-    let mut req = new_neigh(neigh, neigh.ip);
+    let mut req = NeighbourMessage::default();
 
     req.header.ifindex = neigh.link_index;
     req.header.state = neigh.state;
-    req.header.ntype = NDA_UNSPEC as u8;
+    req.header.ntype = neigh.type_ as u8;
+    req.header.flags = neigh.flags as u8;
 
     if neigh.family > 0 {
         req.header.family = neigh.family;
@@ -104,6 +105,9 @@ pub fn neigh_add(neigh: &Neigh, flags: u16) -> anyhow::Result<()> {
     }
     if neigh.master_index > 0 {
         req.nlas.push(Nla::Master(u32::to_ne_bytes(neigh.master_index).to_vec()));
+    }
+    for nla in &req.nlas {
+        println!("nla: {:?}", nla)
     }
 
     let _ = NetlinkHandle::new().execute(RtnlMessage::NewNeighbour(req), flags)?;

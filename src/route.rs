@@ -1,11 +1,10 @@
 #[allow(dead_code)]
-
 use std::net::{IpAddr, Ipv4Addr};
 
 use anyhow::{anyhow, bail};
 use ipnetwork::IpNetwork;
-use netlink_packet_core::{NLM_F_ACK, NLM_F_CREATE, NLM_F_DUMP, NLM_F_EXCL, NLM_F_REQUEST};
-use netlink_packet_route::{RouteMessage, RT_SCOPE_UNIVERSE, RT_TABLE_MAIN, RT_TABLE_UNSPEC, RTM_F_CLONED, RTN_UNICAST, RTN_UNSPEC, RtnlMessage, RTPROT_BOOT, RTPROT_UNSPEC};
+use netlink_packet_core::{NLM_F_ACK, NLM_F_CREATE, NLM_F_DUMP, NLM_F_EXCL, NLM_F_REPLACE, NLM_F_REQUEST};
+use netlink_packet_route::{RouteFlags, RouteMessage, RT_SCOPE_UNIVERSE, RT_TABLE_MAIN, RT_TABLE_UNSPEC, RTM_F_CLONED, RTN_UNICAST, RTN_UNSPEC, RTNH_F_ONLINK, RtnlMessage, RTPROT_BOOT, RTPROT_UNSPEC};
 use netlink_packet_route::route::Nla;
 
 pub use constants::*;
@@ -153,6 +152,11 @@ pub fn route_add(route: &Route) -> anyhow::Result<()> {
     route_handle(route, ReqType::Add, flags)
 }
 
+pub fn route_replace(route: &Route) -> anyhow::Result<()> {
+    let flags = NLM_F_CREATE | NLM_F_REPLACE | NLM_F_ACK;
+    route_handle(route, ReqType::Add, flags)
+}
+
 fn new_route_msg() -> RouteMessage {
     let mut msg = RouteMessage::default();
     msg.header.table = RT_TABLE_MAIN;
@@ -178,6 +182,7 @@ fn route_handle(route: &Route, req_type: ReqType, flags: u16) -> anyhow::Result<
     let family = utils::ip_to_family(&gw);
 
     msg.header.address_family = family;
+    msg.header.flags = route.flags;
     if let Some(table) = route.table {
         if table > 0 {
             if table > u8::MAX as u32 {
@@ -257,7 +262,7 @@ fn msg_to_route(msg: RtnlMessage) -> anyhow::Result<Route> {
         table: Some(msg.header.table as u32),
         r#type: msg.header.kind as i32,
         tos: msg.header.tos as i32,
-        flags: msg.header.flags.bits(),
+        flags: msg.header.flags,
         ..Default::default()
     };
     let family = route.family as Family;

@@ -105,6 +105,7 @@ pub struct Link {
     pub link_kind: LinkKind,
 }
 
+
 impl Link {
     pub fn new(link_attrs: LinkAttrs, link_kind: LinkKind) -> Self {
         Self {
@@ -114,6 +115,9 @@ impl Link {
     }
     pub fn as_index(&self) -> u32 {
         self.link_attrs.index
+    }
+    pub fn kind(&self) -> &'static str {
+        self.link_kind.kind()
     }
 }
 
@@ -126,6 +130,20 @@ pub enum LinkKind {
     Device,
     Dummy(Dummy),
 }
+
+impl LinkKind {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            LinkKind::Veth(_) => "veth",
+            LinkKind::Bridge(_) => "bridge",
+            LinkKind::Tuntap(_) => "tuntap",
+            LinkKind::Vxlan(_) => "vxlan",
+            LinkKind::Dummy(_) => "dummy",
+            LinkKind::Device => "device",
+        }
+    }
+}
+
 
 impl Link {
     pub fn attrs(&self) -> &LinkAttrs {

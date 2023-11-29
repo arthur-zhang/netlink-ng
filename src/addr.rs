@@ -3,8 +3,8 @@ use std::net::{IpAddr, Ipv4Addr};
 use anyhow::anyhow;
 use ipnetwork::{IpNetwork, Ipv4Network};
 use netlink_packet_core::{NLM_F_ACK, NLM_F_DUMP};
-use netlink_packet_route::RtnlMessage;
 use netlink_packet_route::address::{AddressMessage, Nla};
+use netlink_packet_route::RtnlMessage;
 
 use crate::{LinkIndex, utils};
 use crate::handle::NetlinkHandle;
@@ -109,8 +109,8 @@ fn addr_handle(link_idx: LinkIndex, addr: &Addr, req_type: ReqType) -> anyhow::R
     Ok(())
 }
 
-pub fn addr_del(link: LinkIndex, addr: &Addr) -> anyhow::Result<()> {
-    addr_handle(link, addr, ReqType::Del)?;
+pub fn addr_del(link_index: LinkIndex, addr: &Addr) -> anyhow::Result<()> {
+    addr_handle(link_index, addr, ReqType::Del)?;
     Ok(())
 }
 
@@ -151,11 +151,14 @@ impl TryFrom<&AddressMessage> for Addr {
             match attr {
                 Nla::Unspec(_) => {}
                 Nla::Address(addr) => {
-                    dst = Some(IpNetwork::from(utils::bytes_to_ip(addr, family)?));
+                    let ip = utils::bytes_to_ip(addr, family)?;
+                    let prefix = msg.header.prefix_len;
+                    dst = Some(IpNetwork::new(ip, prefix)?);
                 }
                 Nla::Local(bytes) => {
                     let n = bytes.len() * 8;
-                    let ip = IpNetwork::new(utils::bytes_to_ip(bytes, family)?, n as u8).map_err(|_| anyhow!("invalid ip"))?;
+                    let ip = utils::bytes_to_ip(bytes, family)?;
+                    let ip = IpNetwork::new(ip, n as u8).map_err(|_| anyhow!("invalid ip"))?;
                     local = Some(ip);
                 }
                 Nla::Label(label) => {
@@ -175,13 +178,11 @@ impl TryFrom<&AddressMessage> for Addr {
             }
         }
         if let Some(local) = local {
-            if family != FAMILY_V4 || dst.is_none() || dst.as_ref().unwrap() != &local {
+            if family == FAMILY_V4 && dst.is_some() && dst.unwrap().ip() == local.ip() {
+                addr.ipnet = dst.unwrap();
+            } else {
                 addr.ipnet = local;
                 addr.peer = dst;
-            } else {
-                if let Some(dst) = dst {
-                    addr.ipnet = dst;
-                }
             }
         } else {
             if let Some(dst) = dst {
@@ -201,7 +202,7 @@ mod tests {
     use ipnetwork::Ipv4Network;
     use log::info;
 
-    use crate::link_by_name;
+    use crate::{link_by_name, TryAsLinkIndex};
 
     use super::*;
 
@@ -221,24 +222,25 @@ mod tests {
 
     #[test]
     fn test_addr_del() {
-        let link = link_by_name("vethhost").unwrap().unwrap();
-        addr_del(
-            link.as_index(),
+        let link = "vxlan0".try_as_index().unwrap().unwrap();
+        let res = addr_del(
+            link,
             &Addr {
                 ipnet: IpNetwork::V4(
-                    Ipv4Network::new(Ipv4Addr::new(198, 19, 249, 211), 16).unwrap(),
+                    Ipv4Network::new(Ipv4Addr::new(10, 0, 0, 4), 24).unwrap(),
                 ),
                 ..Default::default()
             },
-        )
-            .unwrap();
+        );
+        println!("res: {:?}", res);
     }
 
     #[test]
     fn test_addr_list() {
         // let link = link_by_name("br666").unwrap().unwrap();
-        let link = link_by_name("eth20").unwrap().unwrap();
+        let link = link_by_name("vxlan0").unwrap().unwrap();
         let result = addr_list(link.as_index(), FAMILY_ALL);
+        println!("result: {:?}", result);
         match result {
             Ok(result) => {
                 for addr in result {

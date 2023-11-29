@@ -3,10 +3,7 @@ use std::io::ErrorKind;
 use anyhow::{anyhow, bail};
 use bytes::BytesMut;
 use log::{debug, error, info};
-use netlink_packet_core::{
-    NetlinkBuffer, NetlinkDeserializable, NetlinkMessage, NetlinkPayload,
-    NLM_F_MULTIPART, NLM_F_REQUEST,
-};
+use netlink_packet_core::{NetlinkBuffer, NetlinkDeserializable, NetlinkMessage, NetlinkPayload, NLM_F_ACK, NLM_F_MULTIPART, NLM_F_REQUEST};
 use netlink_packet_route::RtnlMessage;
 use netlink_sys::protocols::NETLINK_ROUTE;
 use netlink_sys::SocketAddr;
@@ -36,7 +33,7 @@ impl NetlinkHandle {
         let mut packet = NetlinkMessage::from(msg);
         self.seq += 1;
         packet.header.sequence_number = self.seq;
-        packet.header.flags = flags | NLM_F_REQUEST;
+        packet.header.flags = flags | NLM_F_REQUEST | NLM_F_ACK;
         packet.finalize();
 
         let mut bytes = vec![0u8; 8192];
@@ -174,18 +171,4 @@ impl NetlinkHandle {
 
         return Ok(result);
     }
-}
-
-pub(crate) fn get_link_index(link: &LinkId) -> anyhow::Result<u32> {
-    let index = match link {
-        LinkId::Id(id) => *id,
-        LinkId::Name(name) => {
-            if let Some(it) = link_by_name(name)? {
-                it.attrs().index
-            } else {
-                bail!("link not found: {}", name);
-            }
-        }
-    };
-    return Ok(index);
 }

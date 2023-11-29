@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-netlink-packet-route = { path = "../netlink-packet-route" }
+#netlink-packet-route = { path = "../netlink-packet-route" }
+netlink-packet-route = { git = "https://github.com/arthur-zhang/netlink-packet-route", rev = "79c61b73c3e7b04a5d8fb6a9f898d674f63d5816" }
 netlink-sys = "0.8.5"
 netlink-packet-core = "0.7.0"
 netlink-packet-utils = "0.5.2"
